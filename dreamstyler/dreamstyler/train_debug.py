@@ -36,10 +36,14 @@ from diffusers import (
     AutoencoderKL,
     DDPMScheduler,
     UNet2DConditionModel,
+    StableDiffusionPipeline
 )
-from diffusers.utils import check_min_version, is_wandb_available
+from diffusers.utils import check_min_version, convert_state_dict_to_diffusers, is_wandb_available
 from diffusers.utils.import_utils import is_xformers_available
 from diffusers.optimization import get_scheduler
+
+from peft import LoraConfig
+from peft.utils import get_peft_model_state_dict
 
 if is_wandb_available():
     import wandb
@@ -157,6 +161,7 @@ def train(opt):
     logger.info(f"  Total optimization steps = {opt.max_train_steps}")
     logger.info(f"  Instantaneous batch size per device = {opt.train_batch_size}")
     logger.info(f"  Gradient Accumulation steps = {opt.gradient_accumulation_steps}")
+    
 
     text_encoder.train()
     for step in trange(opt.max_train_steps, disable=not accelerator.is_local_main_process):
@@ -216,7 +221,7 @@ def train(opt):
 
             loss = F.mse_loss(model_pred.float(), target.float(), reduction="mean")
             accelerator.backward(loss)
-
+                            
             optimizer.step()
             lr_scheduler.step()
             optimizer.zero_grad()
@@ -254,6 +259,14 @@ def train(opt):
     )
     accelerator.end_training()
 
+def cast_training_params(model, dtype=torch.float32):
+    if not isinstance(model, list):
+        model = [model]
+    for m in model:
+        for param in m.parameters():
+            # only upcast trainable parameters into fp32
+            if param.requires_grad:
+                param.data = param.to(dtype)
 
 def init_accelerator_and_logger(logger, opt):
     logging_dir = ospj(opt.output_dir, opt.logging_dir)
@@ -329,7 +342,7 @@ def init_model_and_dataset(accelerator, logger, opt, without_dataset=False):
         subfolder="unet",
         revision=opt.revision,
     )
-
+        
     # DreamStyler: TODO: support multi-vector TI
     if opt.num_vectors > 1:
         raise NotImplementedError
@@ -369,7 +382,27 @@ def init_model_and_dataset(accelerator, logger, opt, without_dataset=False):
     text_encoder.text_model.encoder.requires_grad_(False)
     text_encoder.text_model.final_layer_norm.requires_grad_(False)
     text_encoder.text_model.embeddings.position_embedding.requires_grad_(False)
+    text_encoder.text_model.embeddings.token_embedding.requires_grad_(False)
+        
+    # Freeze the unet parameters before adding adapters
+    for param in text_encoder.parameters():
+        param.requires_grad_(False)
+        
+    text_encoder_lora_config = LoraConfig(
+        r=1,
+        lora_alpha=1,
+        init_lora_weights="gaussian",
+        target_modules=["token_embedding"],
+    )
 
+    # Add adapter and make sure the trainable params are in float32.
+    text_encoder.add_adapter(text_encoder_lora_config)
+    if opt.mixed_precision == "fp16":
+        # only upcast trainable parameters (LoRA) into fp32
+        cast_training_params(text_encoder, dtype=torch.float32)
+
+    lora_layers = filter(lambda p: p.requires_grad, text_encoder.parameters())
+    
     if opt.gradient_checkpointing:
         # keep unet in train mode if we are using gradient checkpointing to save memory.
         # the dropout cannot be != 0 so it doesn't matter if we are in eval or train mode.
@@ -411,7 +444,8 @@ def init_model_and_dataset(accelerator, logger, opt, without_dataset=False):
         )
 
     optimizer = torch.optim.AdamW(
-        text_encoder.get_input_embeddings().parameters(),
+        lora_layers,
+        # text_encoder.get_input_embeddings().parameters(), # NOTE, = text_encoder.text_model.embeddings.token_embedding
         lr=opt.learning_rate,
         betas=(opt.adam_beta1, opt.adam_beta2),
         weight_decay=opt.adam_weight_decay,
@@ -477,6 +511,7 @@ def init_model_and_dataset(accelerator, logger, opt, without_dataset=False):
     # move vae and unet to device and cast to weight_dtype
     unet.to(accelerator.device, dtype=weight_dtype)
     vae.to(accelerator.device, dtype=weight_dtype)
+    text_encoder.to(accelerator.device, dtype=weight_dtype)
 
     # we need to initialize the trackers we use, and also store our configuration.
     # the trackers initializes automatically on the main process.
@@ -509,12 +544,21 @@ def save(
 ):
     prefix = f"{prefix:04d}" if isinstance(prefix, int) else prefix
 
-    learned_embeds = accelerator.unwrap_model(text_encoder).get_input_embeddings()
-    embeds_dict = {}
-    for token, token_id in zip(placeholder_tokens, placeholder_token_ids):
-        embeds_dict[token] = learned_embeds.weight[token_id].detach().cpu()
-    torch.save(embeds_dict, ospj(opt.output_dir, "embedding", f"{prefix}.bin"))
+    # learned_embeds = accelerator.unwrap_model(text_encoder).get_input_embeddings()
+    # embeds_dict = {}
+    # for token, token_id in zip(placeholder_tokens, placeholder_token_ids):
+    #     embeds_dict[token] = learned_embeds.weight[token_id].detach().cpu()
+    # torch.save(embeds_dict, ospj(opt.output_dir, "embedding", f"{prefix}.bin"))
 
+    unwrapped_text_encoder = accelerator.unwrap_model(text_encoder)
+    text_encoder_lora_state_dict = convert_state_dict_to_diffusers(
+        get_peft_model_state_dict(unwrapped_text_encoder)
+    )
+    StableDiffusionPipeline.save_lora_weights(
+        save_directory=ospj(opt.output_dir, "embedding", f"{prefix}.lora"),
+        text_encoder_lora_layers=text_encoder_lora_state_dict,
+        safe_serialization=True,
+    )
 
 def get_options():
     parser = argparse.ArgumentParser()
@@ -572,7 +616,7 @@ def get_options():
     parser.add_argument(
         "--train_image_path",
         type=str,
-        default="./images/03.png",
+        default="/data/ephemeral/home/webtoon-background-generator/dreamstyler/images/03.png",
         help="A path of training image.",
     )
     parser.add_argument(
