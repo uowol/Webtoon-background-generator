@@ -62,6 +62,9 @@ def run(**kargs):
             shutil.rmtree(os.path.join(cfg.MODEL_DIR, model_name))
             st.rerun()
     
+    if st.sidebar.button("Clear cache"):    
+        get_sd_pipeline.clear() # st.cache_resource clear
+    
     # Main - Inference
     draw_header("Inference")
     checkbox = draw_checkbox("I'll customize hyper parameters")        
@@ -222,9 +225,9 @@ def style_transfer_table(cfg, pipe, uploaded_image,
                    strength=0.55, guidance_scale=7.5):
 
     if cfg.GRAY: 
-        init_image = Image.open(uploaded_image).convert("L").convert("RGB").resize((512, 512))
+        init_image = Image.open(uploaded_image).convert("L").convert("RGB").resize((cfg.RESOLUTION, cfg.RESOLUTION))
     else:
-        init_image = Image.open(uploaded_image).convert("RGB").resize((512, 512))
+        init_image = Image.open(uploaded_image).convert("RGB").resize((cfg.RESOLUTION, cfg.RESOLUTION))
             
     fig = plt.figure(figsize=(20,20)) # Notice the equal aspect ratio
     ax = [fig.add_subplot(len(alpha_unets),len(alpha_texts),i+1) for i in range(len(alpha_texts)*len(alpha_unets))]
@@ -255,9 +258,9 @@ def style_transfer(cfg, pipe, uploaded_image,
                    strength=0.55, guidance_scale=7.5):
     
     if cfg.GRAY: 
-        init_image = Image.open(uploaded_image).convert("L").convert("RGB").resize((512, 512))
+        init_image = Image.open(uploaded_image).convert("L").convert("RGB").resize((cfg.RESOLUTION, cfg.RESOLUTION))
     else:
-        init_image = Image.open(uploaded_image).convert("RGB").resize((512, 512))
+        init_image = Image.open(uploaded_image).convert("RGB").resize((cfg.RESOLUTION, cfg.RESOLUTION))
 
     tune_lora_scale(pipe.unet, alpha_unet)
     tune_lora_scale(pipe.text_encoder, alpha_text)
@@ -331,7 +334,7 @@ def get_train_command(cfg):
   --lr_warmup_steps=0 \
   --placeholder_tokens="<s1>|<s2>" \
   --use_template="style"\
-  --save_steps=100 \
+  --save_steps=500 \
   --max_train_steps_ti={cfg.STEP_TI} \
   --max_train_steps_tuning={cfg.STEP_TUNING} \
   --perform_inversion=True \
@@ -363,8 +366,8 @@ run(
     LR_UNET=1e-4,       # edit for train
     LR_TEXT=1e-5,       # edit for train
     LR_TI=5e-4,         # edit for train
-    STEP_TI=500,       # edit for train
-    STEP_TUNING=500,   # edit for train
+    STEP_TI=500,        # edit for train
+    STEP_TUNING=500,    # edit for train
     WITH_PATCH=False,
     GRAY=True,
 )

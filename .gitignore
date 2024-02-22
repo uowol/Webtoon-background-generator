@@ -5,9 +5,18 @@ __pycache__
 __test*
 merged_lora*
 wandb
+data*
 exps*
 .vscode
 build
 lora_diffusion.egg-info
 
-data*
+**/.ipynb_checkpoints/
+**/__pycache__/
+.DS_Store
+*.swp
+*.pth
+*.pkl
+*.npy
+misc/*.sh
+
