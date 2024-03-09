@@ -71,6 +71,9 @@ def run(**kargs):
 
     draw_subheader("Upload Content Image")
     uploaded_image = upload_image()
+    
+    prompt = st.text_input("a image of { 장소 } at { 시간대 } with {{ 등장 사물 1}, { 등장 사물 2}, …, and {등장 사물 3}}")
+    
     if st.button('Clear uploaded content image'):
         st.session_state.file_uploader_key += 1
         st.rerun()
@@ -90,18 +93,31 @@ def run(**kargs):
                             alpha_unet=alpha_unet, alpha_text=alpha_text,
                             strength=strength, guidance_scale=guidance_scale)
     else:
-        alpha_unets = [0.3, 0.45, 0.6]
-        alpha_texts = [0.3, 0.6, 0.8]
-        strengths = [0.45, 0.55, 0.65, 0.75]
+        # alpha_unets = [0.3, 0.45, 0.6]
+        # alpha_texts = [0.3, 0.6, 0.9]
+        # strengths = [0.45, 0.5, 0.55]
+        # if st.button('Start inference'):
+        #     if uploaded_image:
+        #         draw_subheader("Result")
+        #         for strength in strengths:
+        #             with st.spinner('Wait for it...'):
+        #                 style_transfer_table(cfg, pipe, uploaded_image,
+        #                     alpha_unets=alpha_unets, alpha_texts=alpha_texts,
+        #                     strength=strength) 
         
         if st.button('Start inference'):
             if uploaded_image:
                 draw_subheader("Result")
-                for strength in strengths:
-                    with st.spinner('Wait for it...'):
-                        style_transfer_table(cfg, pipe, uploaded_image,
-                            alpha_unets=alpha_unets, alpha_texts=alpha_texts,
-                            strength=strength) 
+                torch.manual_seed(cfg.SEED) # 동일 조건 동일 결과 보장
+                with st.spinner('Wait for it...'):
+                    style_transfer_table_with_seed(cfg, pipe, uploaded_image, prompt,
+                        alpha_unet=0.3, alpha_text=0.3,
+                        strength=0.55) 
+                torch.manual_seed(cfg.SEED) # 동일 조건 동일 결과 보장
+                with st.spinner('Wait for it...'):
+                    style_transfer_table_with_seed(cfg, pipe, uploaded_image, prompt,
+                        alpha_unet=0.3, alpha_text=0.3,
+                        strength=0.45) 
                         
             
     # Main - Train
@@ -209,7 +225,7 @@ def remove_and_save_images(cfg, uploaded_images):
     os.makedirs(os.path.join(cfg.DATA_DIR, cfg.TRAIN_MODEL_NAME), exist_ok=True)
     for upload_image in uploaded_images:
         image_name = upload_image.name
-        pil_image = Image.open(upload_image)
+        pil_image = Image.open(upload_image).convert("RGB")
         if cfg.WITH_PATCH:
             np_image = pil_to_numpy(pil_image)
             np_patches = divide_image_into_patches(np_image)
@@ -220,16 +236,58 @@ def remove_and_save_images(cfg, uploaded_images):
             if cfg.GRAY: pil_image = pil_image.convert("L")
             pil_image.save(os.path.join(cfg.DATA_DIR, cfg.TRAIN_MODEL_NAME, image_name.lower()))
 
+def style_transfer_table_with_seed(cfg, pipe, uploaded_image, prompt,
+                   alpha_unet, alpha_text,
+                   strength=0.45, guidance_scale=7.5):
+    init_image = Image.open(uploaded_image)
+    w, h = init_image.size
+
+    if cfg.GRAY: 
+        init_image = init_image.convert("L").convert("RGB").resize((cfg.RESOLUTION, cfg.RESOLUTION))
+    else:
+        init_image = init_image.convert("RGB").resize((cfg.RESOLUTION, cfg.RESOLUTION))
+                    
+    fig = plt.figure(figsize=(int(w/max(w,h)*20),int(h/max(w,h)*20))) # Notice the equal aspect ratio
+    ax = [fig.add_subplot(1, 3, i+1) for i in range(3)]
+    # ax = [fig.add_subplot(2, 3, i+1) for i in range(6)]
+    for a in ax:
+        a.set_xticklabels([])
+        a.set_yticklabels([])
+        a.set_xticks([])
+        a.set_yticks([])
+        a.set_aspect('equal')
+
+    fig.subplots_adjust(wspace=0, hspace=0)
+
+    for i in range(3):
+    # for i in range(6):
+        tune_lora_scale(pipe.unet, alpha_unet)
+        tune_lora_scale(pipe.text_encoder, alpha_text)
+        if prompt:
+            image = pipe(prompt=f"{prompt}, style of <s1><s2>", 
+                    image=init_image, strength=strength, guidance_scale=guidance_scale).images[0]
+        else:
+            image = pipe(prompt=f"style of <s1><s2>", 
+                    image=init_image, strength=strength, guidance_scale=guidance_scale).images[0]    
+        ax[i].imshow(image.resize((w, h)))   
+
+    st.write(f"strength: {strength}, alpha_unet: {alpha_unet}, alpha_text: {alpha_text}")
+    fig
+
 def style_transfer_table(cfg, pipe, uploaded_image,
                    alpha_unets, alpha_texts,
                    strength=0.55, guidance_scale=7.5):
 
+    init_image = Image.open(uploaded_image)
+    w, h = init_image.size
+
     if cfg.GRAY: 
-        init_image = Image.open(uploaded_image).convert("L").convert("RGB").resize((cfg.RESOLUTION, cfg.RESOLUTION))
+        init_image = init_image.convert("L").convert("RGB").resize((cfg.RESOLUTION, cfg.RESOLUTION))
     else:
-        init_image = Image.open(uploaded_image).convert("RGB").resize((cfg.RESOLUTION, cfg.RESOLUTION))
-            
-    fig = plt.figure(figsize=(20,20)) # Notice the equal aspect ratio
+        init_image = init_image.convert("RGB").resize((cfg.RESOLUTION, cfg.RESOLUTION))
+                    
+    fig = plt.figure(figsize=(
+                        int(w/max(w,h)*20),int(h/max(w,h)*20))) # Notice the equal aspect ratio
     ax = [fig.add_subplot(len(alpha_unets),len(alpha_texts),i+1) for i in range(len(alpha_texts)*len(alpha_unets))]
     for a in ax:
         a.set_xticklabels([])
@@ -245,10 +303,11 @@ def style_transfer_table(cfg, pipe, uploaded_image,
             tune_lora_scale(pipe.unet, alpha_unet)
             tune_lora_scale(pipe.text_encoder, alpha_text)
             torch.manual_seed(cfg.SEED) # 동일 조건 동일 결과 보장
+            # image = pipe(prompt="background asset, style of <s1><s2>", 
             image = pipe(prompt="style of <s1><s2>", 
                         image=init_image, strength=strength, guidance_scale=guidance_scale).images[0]
 
-            ax[i*len(alpha_texts) + j].imshow(image)   
+            ax[i*len(alpha_texts) + j].imshow(image.resize((w, h)))   
     
     st.write(f"strength: {strength}, alpha_unets: {alpha_unets}, alpha_texts: {alpha_texts}")
     fig
@@ -266,6 +325,7 @@ def style_transfer(cfg, pipe, uploaded_image,
     tune_lora_scale(pipe.text_encoder, alpha_text)
     torch.manual_seed(cfg.SEED) # 동일 조건 동일 결과 보장
     
+    # image = pipe(prompt="background asset, style of <s1><s2>", 
     image = pipe(prompt="style of <s1><s2>", 
                 image=init_image, strength=strength, guidance_scale=guidance_scale).images[0]
     
@@ -300,9 +360,12 @@ def patch(cfg, pipe, model_name):
 @st.cache_resource    # NOTE: 배포 시 사용합니다.
 def get_sd_pipeline(cfg):
     model_id = cfg.MODEL_NAME
-    return StableDiffusionImg2ImgPipeline.from_pretrained(model_id, torch_dtype=torch.float16).to(
-        "cuda"
-    )
+    # return StableDiffusionImg2ImgPipeline.from_single_file(
+    #     model_id, torch_dtype=torch.float16
+    # ).to("cuda")
+    return StableDiffusionImg2ImgPipeline.from_pretrained(
+        model_id, torch_dtype=torch.float16
+    ).to("cuda")
 
 def set_seed(seed):
     random.seed(seed)
@@ -333,6 +396,7 @@ def get_train_command(cfg):
   --lr_scheduler="linear" \
   --lr_warmup_steps=0 \
   --placeholder_tokens="<s1>|<s2>" \
+  --initializer_tokens="st|at" \
   --use_template="style"\
   --save_steps=500 \
   --max_train_steps_ti={cfg.STEP_TI} \
@@ -358,7 +422,8 @@ st.markdown("""
     """, unsafe_allow_html=True)
 
 run(
-    MODEL_NAME="runwayml/stable-diffusion-v1-5",
+    # MODEL_NAME="runwayml/stable-diffusion-v1-5",
+    MODEL_NAME="WarriorMama777/OrangeMixs",
     SEED="42",
     DATA_DIR="./data",  # edit for train
     MODEL_DIR="./exps", # edit for inference
@@ -369,5 +434,5 @@ run(
     STEP_TI=500,        # edit for train
     STEP_TUNING=500,    # edit for train
     WITH_PATCH=False,
-    GRAY=True,
+    GRAY=False,
 )
