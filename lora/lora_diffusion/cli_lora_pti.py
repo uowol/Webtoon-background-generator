@@ -118,7 +118,7 @@ def get_models(
         subfolder="unet",
         revision=revision,
     )
-
+    
     return (
         text_encoder.to(device),
         vae.to(device),

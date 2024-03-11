@@ -15,7 +15,7 @@ def divide_image_into_patches(image):
     """
     H, W, C = image.shape # 이미지의 높이, 너비, 채널 수를 얻습니다.
     
-    patch_size = 300
+    patch_size = 200
     
     # 패치 리스트 초기화
     patches = []
