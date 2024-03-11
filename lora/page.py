@@ -5,6 +5,7 @@ import shutil
 import random
 import datetime
 import argparse
+from collections import defaultdict
 
 # external library
 import numpy as np 
@@ -15,6 +16,7 @@ from tqdm import tqdm
 from easydict import EasyDict
 
 # torch
+from safetensors.torch import load_file
 import torch 
 
 # streamlit
@@ -348,24 +350,28 @@ def patch(cfg, pipe, model_name):
     st.session_state['patch'] = model_name
     print("PATCH", model_name)
 
-    patch_pipe(
-        pipe,
-        os.path.join(cfg.MODEL_DIR, model_name, "final_lora.safetensors"),
-        patch_text=True,
-        patch_ti=True,
-        patch_unet=True,
-    )
+    try:
+        patch_pipe(
+            pipe,
+            os.path.join(cfg.MODEL_DIR, model_name, "final_lora.safetensors"),
+            patch_text=True,
+            patch_ti=True,
+            patch_unet=True,
+        )
+    except:
+        get_sd_pipeline.clear()
+        pipe = get_sd_pipeline(cfg)
+        load_lora_weights(pipe, os.path.join(cfg.MODEL_DIR, model_name, "final_lora.safetensors"), 
+                          1.0, "cuda", torch.float32)
 
 # @st.cache_data          # NOTE: 디버깅 시 사용합니다.
 @st.cache_resource    # NOTE: 배포 시 사용합니다.
 def get_sd_pipeline(cfg):
     model_id = cfg.MODEL_NAME
-    # return StableDiffusionImg2ImgPipeline.from_single_file(
-    #     model_id, torch_dtype=torch.float16
-    # ).to("cuda")
-    return StableDiffusionImg2ImgPipeline.from_pretrained(
-        model_id, torch_dtype=torch.float16
+    pipe = StableDiffusionImg2ImgPipeline.from_pretrained(
+        model_id, torch_dtype=torch.float32
     ).to("cuda")
+    return pipe
 
 def set_seed(seed):
     random.seed(seed)
@@ -411,7 +417,63 @@ def get_train_command(cfg):
   --lora_rank={cfg.RANK} \
   --seed={cfg.SEED}"""
   
+from collections import defaultdict
 
+def load_lora_weights(pipeline, checkpoint_path, multiplier, device, dtype):
+    LORA_PREFIX_UNET = "lora_unet"
+    LORA_PREFIX_TEXT_ENCODER = "lora_te"
+    # load LoRA weight from .safetensors
+    state_dict = load_file(checkpoint_path, device=device)
+
+    updates = defaultdict(dict)
+    for key, value in state_dict.items():
+        # it is suggested to print out the key, it usually will be something like below
+        # "lora_te_text_model_encoder_layers_0_self_attn_k_proj.lora_down.weight"
+
+        layer, elem = key.split('.', 1)
+        updates[layer][elem] = value
+
+    # directly update weight in diffusers model
+    for layer, elems in updates.items():
+
+        if "text" in layer:
+            layer_infos = layer.split(LORA_PREFIX_TEXT_ENCODER + "_")[-1].split("_")
+            curr_layer = pipeline.text_encoder
+        else:
+            layer_infos = layer.split(LORA_PREFIX_UNET + "_")[-1].split("_")
+            curr_layer = pipeline.unet
+
+        # find the target layer
+        temp_name = layer_infos.pop(0)
+        while len(layer_infos) > -1:
+            try:
+                curr_layer = curr_layer.__getattr__(temp_name)
+                if len(layer_infos) > 0:
+                    temp_name = layer_infos.pop(0)
+                elif len(layer_infos) == 0:
+                    break
+            except Exception:
+                if len(temp_name) > 0:
+                    temp_name += "_" + layer_infos.pop(0)
+                else:
+                    temp_name = layer_infos.pop(0)
+
+        # get elements for this layer
+        weight_up = elems['lora_up.weight'].to(dtype)
+        weight_down = elems['lora_down.weight'].to(dtype)
+        alpha = elems['alpha']
+        if alpha:
+            alpha = alpha.item() / weight_up.shape[1]
+        else:
+            alpha = 1.0
+
+        # update weight
+        if len(weight_up.shape) == 4:
+            curr_layer.weight.data += multiplier * alpha * torch.mm(weight_up.squeeze(3).squeeze(2), weight_down.squeeze(3).squeeze(2)).unsqueeze(2).unsqueeze(3)
+        else:
+            curr_layer.weight.data += multiplier * alpha * torch.mm(weight_up, weight_down)
+
+    return pipeline
 
 st.markdown("""
     <style>
@@ -422,8 +484,7 @@ st.markdown("""
     """, unsafe_allow_html=True)
 
 run(
-    # MODEL_NAME="runwayml/stable-diffusion-v1-5",
-    MODEL_NAME="WarriorMama777/OrangeMixs",
+    MODEL_NAME="runwayml/stable-diffusion-v1-5",
     SEED="42",
     DATA_DIR="./data",  # edit for train
     MODEL_DIR="./exps", # edit for inference
