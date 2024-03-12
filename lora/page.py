@@ -95,31 +95,31 @@ def run(**kargs):
                             alpha_unet=alpha_unet, alpha_text=alpha_text,
                             strength=strength, guidance_scale=guidance_scale)
     else:
-        # alpha_unets = [0.3, 0.45, 0.6]
-        # alpha_texts = [0.3, 0.6, 0.9]
-        # strengths = [0.45, 0.5, 0.55]
-        # if st.button('Start inference'):
-        #     if uploaded_image:
-        #         draw_subheader("Result")
-        #         for strength in strengths:
-        #             with st.spinner('Wait for it...'):
-        #                 style_transfer_table(cfg, pipe, uploaded_image,
-        #                     alpha_unets=alpha_unets, alpha_texts=alpha_texts,
-        #                     strength=strength) 
-        
+        alpha_unets = [0.3, 0.45, 0.6] #
+        alpha_texts = [0.3, 0.6, 0.9] #[0.9, 0.9, 0.9]
+        strengths = [0.45,0.55]
         if st.button('Start inference'):
             if uploaded_image:
                 draw_subheader("Result")
-                torch.manual_seed(cfg.SEED) # 동일 조건 동일 결과 보장
-                with st.spinner('Wait for it...'):
-                    style_transfer_table_with_seed(cfg, pipe, uploaded_image, prompt,
-                        alpha_unet=0.3, alpha_text=0.3,
-                        strength=0.55) 
-                torch.manual_seed(cfg.SEED) # 동일 조건 동일 결과 보장
-                with st.spinner('Wait for it...'):
-                    style_transfer_table_with_seed(cfg, pipe, uploaded_image, prompt,
-                        alpha_unet=0.3, alpha_text=0.3,
-                        strength=0.45) 
+                for strength in strengths:
+                    with st.spinner('Wait for it...'):
+                        style_transfer_table(cfg, pipe, uploaded_image,
+                            alpha_unets=alpha_unets, alpha_texts=alpha_texts,
+                            strength=strength) 
+        
+        # if st.button('Start inference'):
+        #     if uploaded_image:
+        #         draw_subheader("Result")
+        #         torch.manual_seed(cfg.SEED) # 동일 조건 동일 결과 보장
+        #         with st.spinner('Wait for it...'):
+        #             style_transfer_table_with_seed(cfg, pipe, uploaded_image, prompt,
+        #                 alpha_unet=0.3, alpha_text=0.3,
+        #                 strength=0.55) 
+        #         torch.manual_seed(cfg.SEED) # 동일 조건 동일 결과 보장
+        #         with st.spinner('Wait for it...'):
+        #             style_transfer_table_with_seed(cfg, pipe, uploaded_image, prompt,
+        #                 alpha_unet=0.3, alpha_text=0.3,
+        #                 strength=0.45) 
                         
             
     # Main - Train
@@ -150,6 +150,40 @@ def run(**kargs):
         st.balloons()
         st.rerun()
     
+
+def patch(cfg, pipe, model_name):
+    if st.session_state['patch'] == model_name: return 
+    st.session_state['patch'] = model_name
+    print("PATCH", model_name)
+
+    try:
+        patch_pipe(
+            pipe,
+            os.path.join(cfg.MODEL_DIR, model_name, "final_lora.safetensors"),
+            patch_text=True,
+            patch_ti=True,
+            patch_unet=True,
+        )
+    except:
+        pass
+        # get_sd_pipeline.clear()
+        # pipe = get_sd_pipeline(cfg)
+        # load_lora_weights(pipe, os.path.join(cfg.MODEL_DIR, model_name, "final_lora.safetensors"), 
+        #                   1.0, "cuda", torch.float32)
+
+# @st.cache_data      # NOTE: 디버깅 시 사용합니다.
+@st.cache_resource    # NOTE: 배포 시 사용합니다.
+def get_sd_pipeline(cfg):
+    model_id = cfg.MODEL_NAME
+    pipe = StableDiffusionImg2ImgPipeline.from_pretrained(
+        model_id, safety_checker=None, torch_dtype=torch.float16
+    ).to("cuda")
+    load_lora_weights(
+        pipe, os.path.join(cfg.MODEL_DIR, 'rooms', "final_lora.safetensors"), 
+        0.5, "cuda", torch.float16
+    )
+
+    return pipe
     
 def draw_title(txt): st.title(txt)
 def draw_header(txt): st.header(txt)
@@ -157,11 +191,10 @@ def draw_subheader(txt): st.subheader(txt)
 def draw_side_header(txt): st.sidebar.header(txt)
 def draw_checkbox(txt): return st.checkbox(txt)
 def draw_pretrained_list():   
-    
+
     def get_data():
         lst = os.listdir('exps')
         return pd.DataFrame(lst, columns=['model_name'])
-
 
     df = get_data()
     df["select"] = False
@@ -344,34 +377,6 @@ def style_transfer(cfg, pipe, uploaded_image,
     ax[1].imshow(init_image)
     
     fig
-
-def patch(cfg, pipe, model_name):
-    if st.session_state['patch'] == model_name: return 
-    st.session_state['patch'] = model_name
-    print("PATCH", model_name)
-
-    try:
-        patch_pipe(
-            pipe,
-            os.path.join(cfg.MODEL_DIR, model_name, "final_lora.safetensors"),
-            patch_text=True,
-            patch_ti=True,
-            patch_unet=True,
-        )
-    except:
-        get_sd_pipeline.clear()
-        pipe = get_sd_pipeline(cfg)
-        load_lora_weights(pipe, os.path.join(cfg.MODEL_DIR, model_name, "final_lora.safetensors"), 
-                          1.0, "cuda", torch.float32)
-
-# @st.cache_data          # NOTE: 디버깅 시 사용합니다.
-@st.cache_resource    # NOTE: 배포 시 사용합니다.
-def get_sd_pipeline(cfg):
-    model_id = cfg.MODEL_NAME
-    pipe = StableDiffusionImg2ImgPipeline.from_pretrained(
-        model_id, torch_dtype=torch.float32
-    ).to("cuda")
-    return pipe
 
 def set_seed(seed):
     random.seed(seed)
